@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Success Page</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <h1 id="user_name">Успешная авторизация, {{ data.firstname }}!</h1>
+    <p>{{ data.message }}</p>
+    <script>
+        let tg = window.Telegram.WebApp;
+        let data = {
+            firstname: "{{ data.firstname }}",
+            lastname: "{{ data.lastname }}",
+            alias: "{{ data.alias }}",
+            message: "{{ data.message }}"
+        };
+        tg.sendData(JSON.stringify(data));
+    </script>
+</body>
+</html>
