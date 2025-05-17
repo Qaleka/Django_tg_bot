@@ -9,7 +9,10 @@ from django.utils.timezone import now
 from django.conf import settings
 from datetime import datetime
 from bot_app.oauth import set_user_state, get_user_state
+from pytz import timezone, utc
+from pytz import timezone as pytz_timezone
 
+MOSCOW_TZ = timezone('Europe/Moscow')
 # Указываем путь к настройкам Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'bauman_event_tg_bot.settings')
 django.setup()
@@ -21,42 +24,64 @@ logger = logging.getLogger(__name__)
 TOKEN = '7537310088:AAEfsIy_njqdYZ8bDBRcyz4i7doWXp6dQB8'
 bot = TeleBot(TOKEN)
 
-API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=http://127.0.0.1:8000/oauth_callback"  # Адрес вашего Django приложения
+API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=https://9534-91-184-252-239.ngrok-free.app/oauth_callback"  # Адрес вашего Django приложения
+
+def require_auth(handler_func):
+    """Декоратор для проверки авторизации"""
+    def wrapper(message, *args, **kwargs):
+        telegram_id = message.chat.id
+        if not User.objects.filter(telegram_id=telegram_id).exists():
+            auth_url = f"{API_URL}?tg=telegram_id={telegram_id}"
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("Авторизоваться", url=auth_url))
+            bot.send_message(
+                telegram_id,
+                "❗ Вы не авторизованы. Пожалуйста, авторизуйтесь через сайт университета.",
+                reply_markup=markup
+            )
+            return
+        return handler_func(message, *args, **kwargs)
+    return wrapper
 
 
 # Установка всплывающего меню команд
 def set_bot_commands():
     commands = [
         types.BotCommand("start", "Авторизация через университет"),
-        types.BotCommand("create_event", "Создать событие"),
-        types.BotCommand("events", "Посмотреть список событий"),
+        types.BotCommand("calendar", "Открыть календарь событий"),
+        types.BotCommand("create_event", "Создать новое событие"),
+        types.BotCommand("events", "Список всех событий"),
+        types.BotCommand("delete_event", "Удалить событие (для преподавателей)")
     ]
     bot.set_my_commands(commands)
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    telegram_id = message.chat.id
-    logger.info(f"Получена команда /start от пользователя {telegram_id}")
-
-    # Сохраняем telegram_id в Redis с уникальным ключом
-    session_key = f"tgid_{telegram_id}"
-    cache.set(session_key, telegram_id, timeout=300)  # Храним 5 минут
-
-    # Формируем state с telegram_id
-    tg = f"telegram_id={telegram_id}"
-
-    # Отправляем ссылку с state
-    auth_url = f"{API_URL}?tg={tg}"
+    # Очищаем состояние пользователя
+    set_user_state(message.chat.id, None)
+    
+    # Удаляем предыдущие кнопки (если есть)
+    bot.send_chat_action(message.chat.id, 'typing')
     bot.send_message(
-        telegram_id,
+        message.chat.id,
         "Привет! Авторизуйтесь через сайт университета.",
-        reply_markup=types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("Авторизация", url=auth_url)
-        )
+        reply_markup=types.ReplyKeyboardRemove()  # Удаляем все кнопки
+    )
+    
+    # Создаем ссылку для авторизации
+    auth_url = f"{API_URL}?tg=telegram_id={message.chat.id}"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Авторизация", url=auth_url))
+    
+    bot.send_message(
+        message.chat.id,
+        "Нажмите кнопку ниже для авторизации:",
+        reply_markup=markup
     )
 
 @bot.message_handler(func=lambda message: message.text in ['Да', 'Нет'])
+@require_auth
 def handle_teacher_response(message):
     telegram_id = message.chat.id
     response = message.text
@@ -117,6 +142,7 @@ def handle_cancel(message):
 event_data = {}
 
 @bot.message_handler(commands=['create_event'])
+@require_auth
 def handle_create_event(message):
     """Обработчик команды /create_event"""
     telegram_id = message.chat.id
@@ -164,19 +190,19 @@ def process_description_step(message):
     bot.register_next_step_handler(message, process_date_step)
 
 def process_date_step(message):
-    """Обработка даты события"""
     telegram_id = message.chat.id
 
-    # Если пользователь ввел команду "Отмена"
     if message.text.lower() in ['отмена', 'cancel']:
         handle_cancel(message)
         return
 
     try:
-        # Пытаемся преобразовать введенный текст в дату
-        event_data[telegram_id]['date'] = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
-        
-        # Если дата введена корректно, переходим к следующему шагу
+        # пользователь вводит московское время, без зоны
+        naive_dt = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
+        moscow = timezone("Europe/Moscow")
+        aware_dt = moscow.localize(naive_dt)  # делаем aware datetime
+        event_data[telegram_id]['date'] = aware_dt  # Django сам сохранит в UTC
+
         groups = Group.objects.all()
         if not groups:
             bot.send_message(telegram_id, "Нет доступных групп.")
@@ -187,10 +213,10 @@ def process_date_step(message):
             markup.add(types.KeyboardButton(group.name))
         bot.send_message(telegram_id, "Выберите группы (введите через запятую):", reply_markup=markup)
         bot.register_next_step_handler(message, process_groups_step)
+
     except ValueError:
-        # Если дата введена некорректно, запрашиваем повторный ввод
         bot.send_message(telegram_id, "Неверный формат даты. Попробуйте снова (введите дату в формате ГГГГ-ММ-ДД ЧЧ:ММ):")
-        bot.register_next_step_handler(message, process_date_step)  # Повторно вызываем эту же функцию
+        bot.register_next_step_handler(message, process_date_step)
 
 def process_groups_step(message):
     """Обработка выбора групп"""
@@ -297,6 +323,7 @@ def create_event_from_data(telegram_id):
                         f"Описание: {event.description}\n"
                         f"Дата: {event.date}\n"
                         f"Повторение: {recurrence_info}\n"  # Добавляем информацию о повторении
+                        f"Преподаватель:{event.teacher.user.secondName} {event.teacher.user.firstname} {event.teacher.user.middlename}\n"
                     )
                     # Отправляем сообщение
                     bot.send_message(student.user.telegram_id, message)
@@ -315,8 +342,10 @@ def create_event_from_data(telegram_id):
 
 
 @bot.message_handler(commands=['events'])
+@require_auth
 def handle_events(message):
     """Обработчик команды /events"""
+    msk = pytz_timezone("Europe/Moscow")
     telegram_id = message.chat.id
 
     try:
@@ -335,9 +364,9 @@ def handle_events(message):
                     response += (
                         f"Название: {event.title}\n"
                         f"Описание: {event.description}\n"
-                        f"Дата: {event.date}\n"
+                        f"Дата: {event.date.astimezone(msk).strftime('%Y-%m-%d %H:%M')}\n"
                         f"Повторение: {recurrence_info}\n"  # Добавляем информацию о повторении
-                        f"Преподаватель: {event.teacher.user.username}\n\n"
+                        f"Преподаватель: {event.teacher.user.secondName} {event.teacher.user.firstname} {event.teacher.user.middlename}\n\n"
                     )
             else:
                 response = "У вас нет предстоящих событий."
@@ -370,6 +399,23 @@ def handle_events(message):
     except Exception as e:
         bot.send_message(telegram_id, f"Ошибка: {str(e)}")
 
+@bot.message_handler(commands=['calendar'])
+@require_auth
+def handle_calendar(message):
+    webapp_url = f"https://9534-91-184-252-239.ngrok-free.app/calendar/?tgid={message.chat.id}"
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        "📅 Открыть календарь", 
+        web_app=types.WebAppInfo(url=webapp_url)
+    ))
+    
+    bot.send_message(
+        message.chat.id,
+        "Нажмите кнопку для открытия календаря (не забудьте разрешить небезопасные соединения в Telegram):",
+        reply_markup=markup
+    )
+
 def get_recurrence_info(event):
     """Возвращает текстовое описание повторения события"""
     if event.recurrence == 'none':
@@ -383,12 +429,130 @@ def get_recurrence_info(event):
     else:
         return "Неизвестно"
 
+@bot.message_handler(commands=['delete_event'])
+@require_auth
+def handle_delete_event(message):
+    """Обработчик удаления событий (только для преподавателей)"""
+    telegram_id = message.chat.id
+    
+    try:
+        user = User.objects.get(telegram_id=telegram_id)
+        teacher = Teacher.objects.get(user=user)
+        
+        # Получаем все события преподавателя
+        events = Event.objects.filter(teacher=teacher)
+        
+        if not events:
+            bot.send_message(telegram_id, "У вас нет событий для удаления.")
+            return
+            
+        # Создаем клавиатуру с событиями
+        markup = types.InlineKeyboardMarkup()
+        for event in events:
+            markup.add(types.InlineKeyboardButton(
+                f"{event.title} ({event.date.strftime('%d.%m.%Y')})",
+                callback_data=f"delete_event_{event.id}"
+            ))
+            
+        bot.send_message(
+            telegram_id,
+            "Выберите событие для удаления:",
+            reply_markup=markup
+        )
+        
+    except Teacher.DoesNotExist:
+        bot.send_message(telegram_id, "Эта команда доступна только преподавателям.")
+    except Exception as e:
+        bot.send_message(telegram_id, f"Ошибка: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_event_'))
+def confirm_deletion(call):
+    """Подтверждение удаления и отправка уведомлений"""
+    try:
+        event_id = int(call.data.split('_')[2])
+        event = Event.objects.get(id=event_id)
+        
+        # Создаем клавиатуру подтверждения
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{event.id}"),
+            types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")
+        )
+        
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"Вы уверены, что хотите удалить событие '{event.title}'?",
+            reply_markup=markup
+        )
+        
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Ошибка: {str(e)}", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_delete_'))
+def delete_event_and_notify(call):
+    """Удаление события и рассылка уведомлений"""
+    try:
+        event_id = int(call.data.split('_')[2])
+        event = Event.objects.get(id=event_id)
+        event_title = event.title
+        groups = list(event.groups.all())  # Сохраняем группы перед удалением
+        
+        # Удаляем событие
+        event.delete()
+        
+        # Уведомляем преподавателя
+        bot.answer_callback_query(call.id, "Событие удалено")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"Событие '{event_title}' успешно удалено."
+        )
+        
+        # Рассылаем уведомления участникам
+        for group in groups:
+            for student in group.student_set.all():
+                if student.user.telegram_id:
+                    try:
+                        bot.send_message(
+                            student.user.telegram_id,
+                            f"❌ Событие отменено:\n{event_title}\n"
+                            f"Дата: {event.date.strftime('%d.%m.%Y %H:%M')}\n"
+                            f"Преподаватель: {event.teacher.user.username}"
+                        )
+                    except Exception as e:
+                        logging.error(f"Не удалось уведомить {student.user.telegram_id}: {str(e)}")
+                        
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Ошибка при удалении: {str(e)}", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
+def cancel_deletion(call):
+    """Отмена удаления события"""
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="Удаление отменено."
+    )
+
 # Запуск бота
 def start_bot():
-    # Устанавливаем команды
     set_bot_commands()
-
-    # Проверяем, что это основной процесс
-    if os.environ.get('RUN_MAIN') != 'true':
+    
+    # Проверяем, что это основной процесс (не reloader)
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or os.environ.get('RUN_MAIN') == 'true':
         print("Бот запущен!")
-        bot.polling(none_stop=True)
+        try:
+            bot.polling(none_stop=True, skip_pending=True)
+        except Exception as e:
+            print(f"Ошибка в работе бота: {e}")
+
+import atexit
+
+def stop_bot():
+    try:
+        bot.stop_polling()  # Просто пытаемся остановить, без проверки running
+    except Exception as e:
+        print(f"Ошибка при остановке бота: {e}")
+
+atexit.register(stop_bot)

@@ -1,0 +1,192 @@
+body {
+    font-family: 'Segoe UI', sans-serif;
+    margin: 0;
+    background: #f4f6f8;
+    color: #222;
+}
+
+.container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* 🔹 Информация о пользователе */
+#user-info {
+    text-align: center;
+    margin-bottom: 10px;
+    font-size: 15px;
+    color: #111;
+}
+
+#user-info strong {
+    font-weight: 600;
+}
+
+.error {
+    color: red;
+}
+
+/* 🔹 Заголовок недели */
+#current-week {
+    text-align: center;
+    margin: 15px 0 10px;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+/* 🔹 Кнопки */
+.controls {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+button {
+    background-color: #3b82f6;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.2s;
+}
+
+button:hover {
+    background-color: #2563eb;
+}
+
+/* 🔹 Список дней по вертикали */
+.week-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* 🔹 Карточка дня */
+.day-card {
+    background: white;
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    width: 100%;
+}
+
+/* 🔹 Заголовок дня */
+.day-header {
+    font-weight: bold;
+    margin-bottom: 8px;
+    font-size: 15px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 4px;
+}
+
+/* 🔹 Событие */
+.event {
+    background: #eff6ff;
+    border-left: 4px solid #3b82f6;
+    padding: 5px 10px;
+    border-radius: 6px;
+    margin: 5px 0;
+    font-size: 14px;
+    cursor: pointer;
+
+    /* Плавный переход для hover/active */
+    transition: background-color 0.2s, transform 0.1s;
+}
+
+.event strong {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.event small {
+    color: #555;
+    font-size: 12px;
+}
+
+.event:hover {
+    background-color: #dbeafe; /* чуть темнее */
+}
+
+/* 🔹 Нет событий */
+.no-events {
+    color: #888;
+    font-style: italic;
+    font-size: 14px;
+}
+
+.modal {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(0.95);
+    padding: 20px;
+    border-radius: 12px;
+    z-index: 1001;
+    width: 90%;
+    max-width: 400px;
+    opacity: 0;
+    transition: all 0.3s ease-in-out;
+}
+
+.modal.show {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+.modal.hidden,
+.modal-backdrop.hidden {
+    display: none;
+}
+
+.modal-content {
+    background: #fff;
+    padding: 20px;
+    border-radius: 10px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    position: relative;
+}
+
+.modal-close {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-size: 20px;
+    cursor: pointer;
+}
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+}
+
+.modal-backdrop.show {
+    opacity: 1;
+}
+
+body.modal-open {
+    overflow: hidden;
+}
+
+/* 🔹 Анимация появления контейнера недели */
+.week-container-transition {
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.week-container-transition.show {
+    opacity: 1;
+    transform: translateY(0);
+}

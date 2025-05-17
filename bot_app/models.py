@@ -7,6 +7,7 @@ class User(AbstractUser):
     telegram_id = models.CharField(max_length=255, null=True, blank=True, unique=True)
     firstname = models.CharField(max_length=255, null=True, blank=True)
     secondName = models.CharField(max_length=255, null=True, blank=True)
+    middlename = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
         return self.username
@@ -49,6 +50,7 @@ class Event(models.Model):
     date = models.DateTimeField(default=now)
     teacher = models.ForeignKey('Teacher', on_delete=models.CASCADE, related_name="created_events")
     file = models.FileField(upload_to='event_files/', null=True, blank=True)
+    reminder_sent = models.BooleanField(default=False)
     groups = models.ManyToManyField('Group', through='EventGroup', related_name='events')
     recurrence = models.CharField(max_length=10, choices=RECURRENCE_CHOICES, default='none')
     def __str__(self):

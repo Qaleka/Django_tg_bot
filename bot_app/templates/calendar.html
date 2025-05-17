@@ -1,0 +1,53 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Календарь</title>
+    <link rel="stylesheet" href="{% static 'css/calendar.css' %}?v=4">
+    <script src="{% static 'js/calendar.js' %}?v=1007" defer></script>
+</head>
+<body>
+    <div class="container">
+        <!-- 🔹 Информация о пользователе -->
+        <div id="user-info">
+            {% if user_info.fio %}
+                <strong>{{ user_info.fio }}</strong>
+                {% if user_info.group %}
+                    — группа <strong>{{ user_info.group }}</strong>
+                {% endif %}
+            {% elif user_info.error %}
+                <span class="error">{{ user_info.error }}</span>
+            {% endif %}
+        </div>
+
+        <!-- 🔹 Заголовок текущей недели -->
+        <h2 id="current-week"></h2>
+
+        <!-- 🔹 Кнопки управления -->
+        <div class="controls">
+            <button id="prev-week">← Пред. неделя</button>
+            <button id="next-week">След. неделя →</button>
+            <button id="download-ics">📥 Экспорт .ics</button>
+        </div>
+
+        <!-- 🔹 Отладочная информация -->
+        <p id="debug-log" style="text-align:center; color: red; font-size: 13px;"></p>
+
+        <!-- 🔹 Контейнер для отображения дней недели и событий -->
+        <div id="week-container" class="week-list week-container-transition show"></div>
+    </div>
+    <div id="event-modal" class="modal hidden">
+        <div class="modal-content">
+            <span id="modal-close" class="modal-close">&times;</span>
+            <h3 id="modal-title"></h3>
+            <p><strong>Описание:</strong> <span id="modal-description"></span></p>
+            <p><strong>Дата и время:</strong> <span id="modal-datetime"></span></p>
+            <p><strong>Группы:</strong> <span id="modal-groups"></span></p>
+            <p><strong>Преподаватель:</strong> <span id="modal-teacher"></span></p>
+        </div>
+    </div>
+
+    <div id="modal-backdrop" class="modal-backdrop hidden"></div>
+</body>
+</html>
