@@ -26,6 +26,10 @@ app.conf.beat_schedule = {
         'task': 'bot_app.tasks.send_event_reminders',
         'schedule': crontab(minute='*/1'),  # Каждые 5 минут
     },
+    'delete-old-submissions': {
+        'task': 'bot_app.tasks.delete_old_submissions',
+        'schedule': crontab(hour=0, minute=0),  # каждый день в полночь
+    },
 }
 
 # Автоматически находим и регистрируем задачи (tasks.py) в приложениях Django

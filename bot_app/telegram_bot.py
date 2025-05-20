@@ -12,13 +12,14 @@ from bot_app.oauth import set_user_state, get_user_state
 from pytz import timezone, utc
 from pytz import timezone as pytz_timezone
 from dotenv import load_dotenv
+from datetime import timedelta
 
 MOSCOW_TZ = timezone('Europe/Moscow')
 # Указываем путь к настройкам Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'bauman_event_tg_bot.settings')
 django.setup()
 load_dotenv()  # загружает переменные из .env
-from .models import User, Student, Teacher, Group, Event
+from .models import User, Student, Teacher, Group, Event, StudentSubmission
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,9 @@ def set_bot_commands():
         types.BotCommand("calendar", "Открыть календарь событий"),
         types.BotCommand("create_event", "Создать новое событие"),
         types.BotCommand("events", "Список всех событий"),
-        types.BotCommand("delete_event", "Удалить событие (для преподавателей)")
+        types.BotCommand("delete_event", "Удалить событие (для преподавателей)"),
+        types.BotCommand("send_file", "Отправить файл преподавателю"),
+        types.BotCommand("received_files", "Полученные файлы за месяц")
     ]
     bot.set_my_commands(commands)
 
@@ -535,6 +538,156 @@ def cancel_deletion(call):
         message_id=call.message.message_id,
         text="Удаление отменено."
     )
+
+submission_data = {}
+
+@bot.message_handler(commands=['send_file'])
+@require_auth
+def initiate_submission(message):
+    telegram_id = message.chat.id
+    try:
+        user = User.objects.get(telegram_id=telegram_id)
+        student = Student.objects.get(user=user)
+    except (User.DoesNotExist, Student.DoesNotExist):
+        bot.send_message(telegram_id, "Эта команда доступна только студентам.")
+        return
+
+    # Выбор преподавателя
+    teachers = Teacher.objects.all()
+    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+    for t in teachers:
+        full_name = f"{t.user.secondName} {t.user.firstname[0]}.{t.user.middlename[0]}."
+        markup.add(types.KeyboardButton(full_name))
+
+    bot.send_message(telegram_id, "Выберите преподавателя:", reply_markup=markup)
+
+    bot.register_next_step_handler(message, handle_teacher_selection)
+
+def handle_teacher_selection(message):
+    telegram_id = message.chat.id
+    input_text = message.text.strip()
+
+    selected_teacher = None
+    for teacher in Teacher.objects.select_related('user').all():
+        firstname = teacher.user.firstname or ""
+        secondname = teacher.user.secondName or ""
+        middlename = teacher.user.middlename or ""
+        full_name = f"{secondname} {firstname[0]}.{middlename[0]}."
+        if full_name == input_text:
+            selected_teacher = teacher
+            break
+
+    if not selected_teacher:
+        bot.send_message(telegram_id, "Преподаватель не найден. Попробуйте снова.")
+        initiate_submission(message)
+        return
+
+    # Сохраняем выбранного преподавателя
+    submission_data[telegram_id] = {'teacher': selected_teacher}
+
+    bot.send_message(telegram_id, "Введите описание файла:")
+    bot.register_next_step_handler(message, handle_description_input)
+
+def handle_description_input(message):
+    telegram_id = message.chat.id
+    submission_data[telegram_id]['description'] = message.text
+    bot.send_message(telegram_id, "Прикрепите файл:")
+    bot.register_next_step_handler(message, handle_file_upload)
+
+def handle_file_upload(message):
+    telegram_id = message.chat.id
+
+    if not message.document:
+        bot.send_message(telegram_id, "Пожалуйста, отправьте документ.")
+        bot.register_next_step_handler(message, handle_file_upload)
+        return
+
+    file_id = message.document.file_id
+    file_info = bot.get_file(file_id)
+    file_data = bot.download_file(file_info.file_path)
+    file_name = message.document.file_name
+
+    file_path = os.path.join(settings.MEDIA_ROOT, 'submissions', file_name)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, 'wb') as f:
+        f.write(file_data)
+
+    submission_data[telegram_id]['file_path'] = file_path
+    submission_data[telegram_id]['file_name'] = file_name
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ Отправить", callback_data="confirm_submission"))
+    markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_submission"))
+    bot.send_message(telegram_id, "Подтвердите отправку файла:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["confirm_submission", "cancel_submission"])
+def handle_submission_confirmation(call):
+    telegram_id = call.message.chat.id
+    data = submission_data.get(telegram_id)
+
+    if call.data == "cancel_submission":
+        submission_data.pop(telegram_id, None)
+        bot.edit_message_text("Отправка отменена.", telegram_id, call.message.message_id)
+        return
+
+    if data:
+        user = User.objects.get(telegram_id=telegram_id)
+        student = Student.objects.get(user=user)
+
+        submission = StudentSubmission.objects.create(
+            student=student,
+            teacher=data['teacher'],
+            description=data['description'],
+        )
+        submission.file.name = f"submissions/{os.path.basename(data['file_path'])}"
+        submission.save()
+
+        # Уведомим преподавателя
+        if data['teacher'].user.telegram_id:
+            bot.send_message(
+                data['teacher'].user.telegram_id,
+                f"📥 Новый файл от {student.user.secondName} {student.user.firstname} {student.user.middlename}:\nОписание: {data['description']}"
+            )
+            with open(data['file_path'], 'rb') as f:
+                bot.send_document(data['teacher'].user.telegram_id, f)
+
+        bot.edit_message_text("Файл успешно отправлен!", telegram_id, call.message.message_id)
+        submission_data.pop(telegram_id, None)
+
+@bot.message_handler(commands=['received_files'])
+@require_auth
+def view_received_files(message):
+    telegram_id = message.chat.id
+    try:
+        user = User.objects.get(telegram_id=telegram_id)
+        teacher = Teacher.objects.get(user=user)
+    except (User.DoesNotExist, Teacher.DoesNotExist):
+        bot.send_message(telegram_id, "Только преподаватели могут просматривать полученные файлы.")
+        return
+
+    cutoff = now() - timedelta(days=30)
+
+    submissions = StudentSubmission.objects.filter(teacher=teacher, created_at__gte=cutoff).order_by('-created_at')
+
+    if not submissions.exists():
+        bot.send_message(telegram_id, "За последний месяц нет новых отправок.")
+        return
+
+    for sub in submissions:
+        local_dt = sub.created_at.astimezone(MOSCOW_TZ)
+        text = (
+            f"👤 Студент: {sub.student.user.secondName} {sub.student.user.firstname} {sub.student.user.middlename}\n"
+            f"📝 Описание: {sub.description}\n"
+            f"📅 Дата: {local_dt.strftime('%d.%m.%Y %H:%M')}"
+        )
+        try:
+            bot.send_message(telegram_id, text)
+            if sub.file:
+                with open(sub.file.path, 'rb') as f:
+                    bot.send_document(telegram_id, f)
+        except Exception as e:
+            bot.send_message(telegram_id, f"Ошибка при отправке файла: {str(e)}")
+
 
 # Запуск бота
 def start_bot():

@@ -64,3 +64,13 @@ class EventGroup(models.Model):
 
     def __str__(self):
         return f"{self.event.title} -> {self.group.name}"
+
+class StudentSubmission(models.Model):
+    student = models.ForeignKey(Student, on_delete=models.CASCADE)
+    teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE)
+    description = models.TextField()
+    file = models.FileField(upload_to='submissions/')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Отправка от {self.student.user.username} -> {self.teacher.user.username}"

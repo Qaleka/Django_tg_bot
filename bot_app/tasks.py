@@ -69,3 +69,17 @@ def send_event_reminders():
                     bot.send_message(student.user.telegram_id, message)
                     event.reminder_sent = True
                     event.save()
+
+@shared_task
+def delete_old_submissions():
+    """Удаляет файлы и записи, старше 30 дней"""
+    threshold = timezone.now() - timedelta(days=30)
+    old_subs = StudentSubmission.objects.filter(created_at__lt=threshold)
+
+    for sub in old_subs:
+        if sub.file and os.path.exists(sub.file.path):
+            try:
+                os.remove(sub.file.path)
+            except Exception as e:
+                print(f"Не удалось удалить файл: {sub.file.path} — {e}")
+    old_subs.delete()
