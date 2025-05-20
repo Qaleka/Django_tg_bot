@@ -29,8 +29,8 @@ SECRET_KEY = 'django-insecure-k(0p(+w4kaw$39tn05fdn-uaid!r_dgj%3z+7odhppmf-k@wa$
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '9534-91-184-252-239.ngrok-free.app']
-
+ALLOWED_HOSTS = ['baumeventbot.ru', 'www.baumeventbot.ru']
+CSRF_TRUSTED_ORIGINS = ['https://baumeventbot.ru', 'https://www.baumeventbot.ru']
 
 # Application definition
 
@@ -82,11 +82,11 @@ WSGI_APPLICATION = 'bauman_event_tg_bot.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'tg_bot',
-        'USER': 'postgres',
-        'PASSWORD': 'qaleka123',
-        'HOST': 'localhost',  # Название контейнера Docker с PostgreSQL
-        'PORT': 5432,
+        'NAME': os.environ.get('DB_NAME', 'tg_bot'),
+        'USER': os.environ.get('DB_USER', 'botuser'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
         'OPTIONS': {
             'client_encoding': 'UTF8',  # Укажите явно кодировку клиента
         }
@@ -95,12 +95,12 @@ DATABASES = {
 
 # Redis для хранения сессий
 CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': 'redis://localhost:6379/1',
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-        },
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": f"redis://{os.environ.get('REDIS_HOST', 'localhost')}:{os.environ.get('REDIS_PORT', '6379')}/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
     }
 }
 

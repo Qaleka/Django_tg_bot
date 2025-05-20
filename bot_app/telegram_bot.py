@@ -11,20 +11,21 @@ from datetime import datetime
 from bot_app.oauth import set_user_state, get_user_state
 from pytz import timezone, utc
 from pytz import timezone as pytz_timezone
+from dotenv import load_dotenv
 
 MOSCOW_TZ = timezone('Europe/Moscow')
 # Указываем путь к настройкам Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'bauman_event_tg_bot.settings')
 django.setup()
-
+load_dotenv()  # загружает переменные из .env
 from .models import User, Student, Teacher, Group, Event
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = '7537310088:AAEfsIy_njqdYZ8bDBRcyz4i7doWXp6dQB8'
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(TOKEN)
 
-API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=https://9534-91-184-252-239.ngrok-free.app/oauth_callback"  # Адрес вашего Django приложения
+API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=https://baumeventbot.ru/oauth_callback"  # Адрес вашего Django приложения
 
 def require_auth(handler_func):
     """Декоратор для проверки авторизации"""
@@ -402,7 +403,7 @@ def handle_events(message):
 @bot.message_handler(commands=['calendar'])
 @require_auth
 def handle_calendar(message):
-    webapp_url = f"https://9534-91-184-252-239.ngrok-free.app/calendar/?tgid={message.chat.id}"
+    webapp_url = f"https://baumeventbot.ru/calendar/?tgid={message.chat.id}"
     
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(

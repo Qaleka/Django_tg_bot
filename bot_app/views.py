@@ -25,7 +25,8 @@ from django.utils.timezone import make_aware, is_naive
 from datetime import datetime, time, timedelta
 from django.utils.timezone import get_current_timezone
 from pytz import timezone as pytz_timezone
-TOKEN = '7537310088:AAEfsIy_njqdYZ8bDBRcyz4i7doWXp6dQB8'
+import os
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(TOKEN)
 
 @api_view(['GET'])
