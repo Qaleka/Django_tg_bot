@@ -33,11 +33,9 @@ bot = TeleBot(TOKEN)
 def oauth_callback(request):
     clear_session(request)
 
-    # Получаем код авторизации и state
     code = request.GET.get('code', '')
     tg = request.GET.get('tg', '')
     print(tg)
-    # Извлекаем telegram_id из state
     telegram_id = None
     if tg:
         state_params = tg.split('&')
@@ -49,7 +47,6 @@ def oauth_callback(request):
     if not telegram_id:
         return Response({'message': 'Telegram ID not found'}, status=400)
 
-    # Сохраняем telegram_id в Redis
     session_key = f"session_{request.session.session_key}"
     cache.set(f"{session_key}_telegram_id", telegram_id, timeout=3600)
 
@@ -62,7 +59,6 @@ def oauth_callback(request):
     user = get_current_user(request)
     
     if user:
-        # Достаем telegram_id из Redis
         telegram_id = cache.get(f"{session_key}_telegram_id")
 
         if not telegram_id:
@@ -70,16 +66,13 @@ def oauth_callback(request):
 
         cache.set(f"{session_key}_user", user, timeout=3600)
 
-        # Проверяем, есть ли пользователь с таким telegram_id в базе данных
         try:
             django_user = User.objects.get(telegram_id=telegram_id)
-            # Перенаправляем на страницу успешной авторизации с сообщением
             url = f"/auth_success?telegram_id={telegram_id}&message=Вы уже авторизованы.&"
             for field, value in user.items():
                 url += f"{field}={value}&"
             return redirect(url.rstrip('&'))
         except User.DoesNotExist:
-            # Если пользователь не найден, создаем новую запись
             django_user, created = User.objects.get_or_create(
                 username=user["username"],
                 defaults={
@@ -92,7 +85,6 @@ def oauth_callback(request):
             print("Успех")
             message = "Пользователь успешно зарегистрирован."
 
-        # Очистка временного ключа в Redis
         cache.delete(f"{session_key}_telegram_id")
 
         url = f"/auth_success?telegram_id={telegram_id}&message={message}&"
@@ -124,7 +116,6 @@ def auth_success(request):
     telegram_id = request.query_params.get('telegram_id', '')
     message = request.query_params.get('message', '')
 
-    # Новые поля
     firstname = request.query_params.get('firstname', '')
     lastname = request.query_params.get('lastname', '')
     middlename = request.query_params.get('middlename', '')
@@ -245,7 +236,6 @@ def export_ics(request):
     except Exception as e:
         return JsonResponse({'error': f'Ошибка разбора дат: {e}'}, status=400)
 
-    # Фильтрация по UTC
     query = Q(date__gte=start_utc, date__lt=end_utc)
 
     if hasattr(user, 'student') and user.student.group:

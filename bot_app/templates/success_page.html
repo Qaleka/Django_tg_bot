@@ -1,22 +1,49 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Success Page</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <title>Авторизация прошла успешно</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #e0f7fa, #80deea);
+            color: #004d40;
+            text-align: center;
+            padding-top: 80px;
+            margin: 0;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 15px;
+        }
+        p {
+            font-size: 18px;
+            margin-bottom: 20px;
+        }
+        .note {
+            font-size: 16px;
+            color: #00695c;
+            margin-top: 30px;
+        }
+    </style>
 </head>
 <body>
-    <h1 id="user_name">Успешная авторизация, {{ data.firstname }}!</h1>
+    <h1>Добро пожаловать, {{ data.firstname }}!</h1>
     <p>{{ data.message }}</p>
+    <div class="note">Вы можете закрыть эту страницу.</div>
+
     <script>
-        let tg = window.Telegram.WebApp;
-        let data = {
-            firstname: "{{ data.firstname }}",
-            lastname: "{{ data.lastname }}",
-            alias: "{{ data.alias }}",
-            message: "{{ data.message }}"
-        };
-        tg.sendData(JSON.stringify(data));
+        // Отправка данных в Telegram WebApp, если есть
+        if (window.Telegram && Telegram.WebApp) {
+            let tg = Telegram.WebApp;
+            let data = {
+                firstname: "{{ data.firstname }}",
+                lastname: "{{ data.lastname }}",
+                alias: "{{ data.alias }}",
+                message: "{{ data.message }}"
+            };
+            tg.sendData(JSON.stringify(data));
+        }
     </script>
 </body>
 </html>

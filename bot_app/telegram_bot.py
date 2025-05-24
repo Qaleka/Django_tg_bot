@@ -13,9 +13,9 @@ from pytz import timezone, utc
 from pytz import timezone as pytz_timezone
 from dotenv import load_dotenv
 from datetime import timedelta
+from functools import lru_cache
 
 MOSCOW_TZ = timezone('Europe/Moscow')
-# Указываем путь к настройкам Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'bauman_event_tg_bot.settings')
 django.setup()
 load_dotenv()  # загружает переменные из .env
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(TOKEN)
 
-API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=https://baumeventbot.ru/oauth_callback"  # Адрес вашего Django приложения
+API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=https://baumeventbot.ru/oauth_callback"
 
 def require_auth(handler_func):
     """Декоратор для проверки авторизации"""
@@ -62,18 +62,15 @@ def set_bot_commands():
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    # Очищаем состояние пользователя
     set_user_state(message.chat.id, None)
     
-    # Удаляем предыдущие кнопки (если есть)
     bot.send_chat_action(message.chat.id, 'typing')
     bot.send_message(
         message.chat.id,
         "Привет! Авторизуйтесь через сайт университета.",
-        reply_markup=types.ReplyKeyboardRemove()  # Удаляем все кнопки
+        reply_markup=types.ReplyKeyboardRemove()
     )
     
-    # Создаем ссылку для авторизации
     auth_url = f"{API_URL}?tg=telegram_id={message.chat.id}"
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Авторизация", url=auth_url))
@@ -90,24 +87,20 @@ def handle_teacher_response(message):
     telegram_id = message.chat.id
     response = message.text
 
-    # Проверяем, ожидает ли бот ответа на вопрос о преподавателе
     if get_user_state(telegram_id) != "awaiting_teacher_response":
-        return  # Игнорируем сообщение, если состояние не соответствует
+        return
 
     try:
         # Получаем пользователя из базы данных по telegram_id
         user = User.objects.get(telegram_id=telegram_id)
 
         if response == 'Да':
-            # Пользователь - преподаватель
             teacher, created = Teacher.objects.get_or_create(user=user)
             bot.send_message(telegram_id, "Вы зарегистрированы как преподаватель.")
         else:
-            # Пользователь - студент, запросим группу
             bot.send_message(telegram_id, "Введите номер вашей группы:")
             bot.register_next_step_handler(message, handle_group_input, user)
 
-        # Очищаем состояние пользователя после обработки ответа
         set_user_state(telegram_id, None)
 
     except User.DoesNotExist:
@@ -115,19 +108,33 @@ def handle_teacher_response(message):
     except Exception as e:
         bot.send_message(telegram_id, f"Ошибка: {str(e)}")
 
+@lru_cache
+def get_valid_groups():
+    with open("extracted_groups.txt", "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
+
 def handle_group_input(message, user):
     telegram_id = message.chat.id
-    group_name = message.text
+    group_name = message.text.strip()
+
+    valid_groups = get_valid_groups()
+
+    if group_name not in valid_groups:
+        bot.send_message(telegram_id, "Такой группы не найдено. Пожалуйста, введите ещё раз:")
+        bot.register_next_step_handler(message, handle_group_input, user)
+        return
 
     try:
-        # Создаем группу, если ее нет
-        group, created = Group.objects.get_or_create(name=group_name)
+        # Проверка: есть ли такая группа в БД
+        group, _ = Group.objects.get_or_create(name=group_name)
 
-        # Создаем запись студента
-        student, created = Student.objects.get_or_create(user=user)
+        # Привязка студента
+        student, _ = Student.objects.get_or_create(user=user)
         student.group = group
         student.save()
+
         bot.send_message(telegram_id, f"Вы зарегистрированы как студент группы {group_name}.")
+        set_user_state(telegram_id, None)
 
     except Exception as e:
         bot.send_message(telegram_id, f"Ошибка при обработке данных: {str(e)}")
@@ -136,7 +143,6 @@ def handle_group_input(message, user):
 def handle_cancel(message):
     telegram_id = message.chat.id
 
-    # Очищаем временные данные
     if telegram_id in event_data:
         del event_data[telegram_id]
 
@@ -151,7 +157,6 @@ def handle_create_event(message):
     """Обработчик команды /create_event"""
     telegram_id = message.chat.id
 
-    # Проверяем, является ли пользователь преподавателем
     try:
         user = User.objects.get(telegram_id=telegram_id)
         teacher = Teacher.objects.get(user=user)
@@ -159,7 +164,6 @@ def handle_create_event(message):
         bot.send_message(telegram_id, "Только преподаватели могут создавать события.")
         return
 
-    # Запрашиваем название события
     bot.send_message(telegram_id, "Введите название события (или введите 'Отмена' для отмены):")
     bot.register_next_step_handler(message, process_title_step)
 
@@ -167,14 +171,12 @@ def process_title_step(message):
     """Обработка названия события"""
     telegram_id = message.chat.id
 
-    # Если пользователь ввел команду "Отмена"
     if message.text.lower() in ['отмена', 'cancel']:
         handle_cancel(message)
         return
 
     event_data[telegram_id] = {'title': message.text}
 
-    # Запрашиваем описание события
     bot.send_message(telegram_id, "Введите описание события (или введите 'Отмена' для отмены):")
     bot.register_next_step_handler(message, process_description_step)
 
@@ -182,14 +184,12 @@ def process_description_step(message):
     """Обработка описания события"""
     telegram_id = message.chat.id
 
-    # Если пользователь ввел команду "Отмена"
     if message.text.lower() in ['отмена', 'cancel']:
         handle_cancel(message)
         return
 
     event_data[telegram_id]['description'] = message.text
 
-    # Запрашиваем дату события
     bot.send_message(telegram_id, "Введите дату события в формате ГГГГ-ММ-ДД ЧЧ:ММ (или введите 'Отмена' для отмены):")
     bot.register_next_step_handler(message, process_date_step)
 
@@ -201,11 +201,10 @@ def process_date_step(message):
         return
 
     try:
-        # пользователь вводит московское время, без зоны
         naive_dt = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
         moscow = timezone("Europe/Moscow")
-        aware_dt = moscow.localize(naive_dt)  # делаем aware datetime
-        event_data[telegram_id]['date'] = aware_dt  # Django сам сохранит в UTC
+        aware_dt = moscow.localize(naive_dt)
+        event_data[telegram_id]['date'] = aware_dt
 
         groups = Group.objects.all()
         if not groups:
@@ -226,7 +225,6 @@ def process_groups_step(message):
     """Обработка выбора групп"""
     telegram_id = message.chat.id
 
-    # Если пользователь ввел команду "Отмена"
     if message.text.lower() in ['отмена', 'cancel']:
         handle_cancel(message)
         return
@@ -234,7 +232,6 @@ def process_groups_step(message):
     selected_groups = message.text.split(', ')
     event_data[telegram_id]['groups'] = Group.objects.filter(name__in=selected_groups)
 
-    # Запрашиваем тип повторения
     markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
     markup.add('Без повторения', 'Ежедневно', 'Еженедельно', 'Ежемесячно')
     bot.send_message(telegram_id, "Выберите тип повторения:", reply_markup=markup)
@@ -244,12 +241,10 @@ def process_recurrence_step(message):
     """Обработка типа повторения"""
     telegram_id = message.chat.id
 
-    # Если пользователь ввел команду "Отмена"
     if message.text.lower() in ['отмена', 'cancel']:
         handle_cancel(message)
         return
 
-    # Сохраняем тип повторения
     recurrence_mapping = {
         'Без повторения': 'none',
         'Ежедневно': 'daily',
@@ -258,7 +253,6 @@ def process_recurrence_step(message):
     }
     event_data[telegram_id]['recurrence'] = recurrence_mapping.get(message.text, 'none')
 
-    # Запрашиваем файл
     bot.send_message(telegram_id, "Приложите файл (если необходимо, или введите 'Пропустить'):")
     bot.register_next_step_handler(message, process_file_step)
 
@@ -267,8 +261,7 @@ def process_file_step(message):
     """Обработка файла"""
     telegram_id = message.chat.id
 
-    # Если пользователь ввел команду "Отмена"
-    if message.text.lower() in ['отмена', 'cancel']:
+    if message.text and message.text.lower() in ['отмена', 'cancel']:
         handle_cancel(message)
         return
 
@@ -278,7 +271,6 @@ def process_file_step(message):
         downloaded_file = bot.download_file(file_info.file_path)
         file_name = message.document.file_name
 
-        # Создаем директорию, если она не существует
         os.makedirs(os.path.join(settings.MEDIA_ROOT, 'event_files'), exist_ok=True)
 
         file_path = os.path.join(settings.MEDIA_ROOT, 'event_files', file_name)
@@ -288,7 +280,6 @@ def process_file_step(message):
     else:
         event_data[telegram_id]['file'] = None
 
-    # Создаем событие
     create_event_from_data(telegram_id)
 
 def create_event_from_data(telegram_id):
@@ -302,36 +293,32 @@ def create_event_from_data(telegram_id):
         user = User.objects.get(telegram_id=telegram_id)
         teacher = Teacher.objects.get(user=user)
 
-        # Создаем событие
         event = Event.objects.create(
             title=data['title'],
             description=data['description'],
             date=data['date'],
             teacher=teacher,
             file=data['file'],
-            recurrence=data.get('recurrence', 'none')  # Добавляем поле повторения
+            recurrence=data.get('recurrence', 'none')
         )
-        # Связываем группы с событием
+
         event.groups.set(data['groups'])
 
-        # Отправляем уведомления ученикам
         for group in data['groups']:
             students = Student.objects.filter(group=group)
             for student in students:
                 if student.user.telegram_id:
-                    # Формируем сообщение
-                    recurrence_info = get_recurrence_info(event)  # Получаем информацию о повторении
+
+                    recurrence_info = get_recurrence_info(event)
                     message = (
                         f"Новое событие:\n"
                         f"Название: {event.title}\n"
                         f"Описание: {event.description}\n"
                         f"Дата: {event.date}\n"
-                        f"Повторение: {recurrence_info}\n"  # Добавляем информацию о повторении
+                        f"Повторение: {recurrence_info}\n"
                         f"Преподаватель:{event.teacher.user.secondName} {event.teacher.user.firstname} {event.teacher.user.middlename}\n"
                     )
-                    # Отправляем сообщение
                     bot.send_message(student.user.telegram_id, message)
-                    # Если есть файл, отправляем его
                     if event.file:
                         with open(event.file.path, 'rb') as file:
                             bot.send_document(student.user.telegram_id, file)
@@ -340,7 +327,6 @@ def create_event_from_data(telegram_id):
     except Exception as e:
         bot.send_message(telegram_id, f"Ошибка при создании события: {str(e)}")
     finally:
-        # Очищаем временные данные
         if telegram_id in event_data:
             del event_data[telegram_id]
 
@@ -353,42 +339,37 @@ def handle_events(message):
     telegram_id = message.chat.id
 
     try:
-        # Получаем пользователя
         user = User.objects.get(telegram_id=telegram_id)
 
-        # Проверяем, является ли пользователь студентом
         try:
             student = Student.objects.get(user=user)
-            # Если студент, получаем события для его группы
             events = Event.objects.filter(groups=student.group)
             if events:
                 response = "Ваши события:\n"
                 for event in events:
-                    recurrence_info = get_recurrence_info(event)  # Получаем информацию о повторении
+                    recurrence_info = get_recurrence_info(event)
                     response += (
                         f"Название: {event.title}\n"
                         f"Описание: {event.description}\n"
                         f"Дата: {event.date.astimezone(msk).strftime('%Y-%m-%d %H:%M')}\n"
-                        f"Повторение: {recurrence_info}\n"  # Добавляем информацию о повторении
+                        f"Повторение: {recurrence_info}\n"
                         f"Преподаватель: {event.teacher.user.secondName} {event.teacher.user.firstname} {event.teacher.user.middlename}\n\n"
                     )
             else:
                 response = "У вас нет предстоящих событий."
         except Student.DoesNotExist:
-            # Если не студент, проверяем, является ли пользователь преподавателем
             try:
                 teacher = Teacher.objects.get(user=user)
-                # Если преподаватель, получаем созданные им события
                 events = Event.objects.filter(teacher=teacher)
                 if events:
                     response = "Ваши созданные события:\n"
                     for event in events:
-                        recurrence_info = get_recurrence_info(event)  # Получаем информацию о повторении
+                        recurrence_info = get_recurrence_info(event)
                         response += (
                             f"Название: {event.title}\n"
                             f"Описание: {event.description}\n"
-                            f"Дата: {event.date}\n"
-                            f"Повторение: {recurrence_info}\n"  # Добавляем информацию о повторении
+                            f"Дата: {event.date.astimezone(msk).strftime('%Y-%m-%d %H:%M')}\n"
+                            f"Повторение: {recurrence_info}\n"
                             f"Группы: {', '.join([group.name for group in event.groups.all()])}\n\n"
                         )
                 else:
@@ -396,7 +377,6 @@ def handle_events(message):
             except Teacher.DoesNotExist:
                 response = "Вы не являетесь ни студентом, ни преподавателем."
 
-        # Отправляем ответ пользователю
         bot.send_message(telegram_id, response)
     except User.DoesNotExist:
         bot.send_message(telegram_id, "Пользователь не найден.")
@@ -416,7 +396,7 @@ def handle_calendar(message):
     
     bot.send_message(
         message.chat.id,
-        "Нажмите кнопку для открытия календаря (не забудьте разрешить небезопасные соединения в Telegram):",
+        "Нажмите кнопку для открытия календаря:",
         reply_markup=markup
     )
 
@@ -443,14 +423,12 @@ def handle_delete_event(message):
         user = User.objects.get(telegram_id=telegram_id)
         teacher = Teacher.objects.get(user=user)
         
-        # Получаем все события преподавателя
         events = Event.objects.filter(teacher=teacher)
         
         if not events:
             bot.send_message(telegram_id, "У вас нет событий для удаления.")
             return
             
-        # Создаем клавиатуру с событиями
         markup = types.InlineKeyboardMarkup()
         for event in events:
             markup.add(types.InlineKeyboardButton(
@@ -476,7 +454,6 @@ def confirm_deletion(call):
         event_id = int(call.data.split('_')[2])
         event = Event.objects.get(id=event_id)
         
-        # Создаем клавиатуру подтверждения
         markup = types.InlineKeyboardMarkup()
         markup.row(
             types.InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{event.id}"),
@@ -500,12 +477,10 @@ def delete_event_and_notify(call):
         event_id = int(call.data.split('_')[2])
         event = Event.objects.get(id=event_id)
         event_title = event.title
-        groups = list(event.groups.all())  # Сохраняем группы перед удалением
+        groups = list(event.groups.all())
         
-        # Удаляем событие
         event.delete()
         
-        # Уведомляем преподавателя
         bot.answer_callback_query(call.id, "Событие удалено")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
@@ -513,7 +488,6 @@ def delete_event_and_notify(call):
             text=f"Событие '{event_title}' успешно удалено."
         )
         
-        # Рассылаем уведомления участникам
         for group in groups:
             for student in group.student_set.all():
                 if student.user.telegram_id:
@@ -522,7 +496,7 @@ def delete_event_and_notify(call):
                             student.user.telegram_id,
                             f"❌ Событие отменено:\n{event_title}\n"
                             f"Дата: {event.date.strftime('%d.%m.%Y %H:%M')}\n"
-                            f"Преподаватель: {event.teacher.user.username}"
+                            f"Преподаватель: {event.teacher.user.secondName} {event.teacher.user.firstname} {event.teacher.user.middlename}"
                         )
                     except Exception as e:
                         logging.error(f"Не удалось уведомить {student.user.telegram_id}: {str(e)}")
@@ -552,7 +526,6 @@ def initiate_submission(message):
         bot.send_message(telegram_id, "Эта команда доступна только студентам.")
         return
 
-    # Выбор преподавателя
     teachers = Teacher.objects.all()
     markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
     for t in teachers:
@@ -582,7 +555,6 @@ def handle_teacher_selection(message):
         initiate_submission(message)
         return
 
-    # Сохраняем выбранного преподавателя
     submission_data[telegram_id] = {'teacher': selected_teacher}
 
     bot.send_message(telegram_id, "Введите описание файла:")
@@ -642,7 +614,6 @@ def handle_submission_confirmation(call):
         submission.file.name = f"submissions/{os.path.basename(data['file_path'])}"
         submission.save()
 
-        # Уведомим преподавателя
         if data['teacher'].user.telegram_id:
             bot.send_message(
                 data['teacher'].user.telegram_id,
@@ -693,7 +664,6 @@ def view_received_files(message):
 def start_bot():
     set_bot_commands()
     
-    # Проверяем, что это основной процесс (не reloader)
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or os.environ.get('RUN_MAIN') == 'true':
         print("Бот запущен!")
         try:
@@ -705,7 +675,7 @@ import atexit
 
 def stop_bot():
     try:
-        bot.stop_polling()  # Просто пытаемся остановить, без проверки running
+        bot.stop_polling()
     except Exception as e:
         print(f"Ошибка при остановке бота: {e}")
 
