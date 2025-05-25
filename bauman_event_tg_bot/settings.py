@@ -29,7 +29,7 @@ SECRET_KEY = 'django-insecure-k(0p(+w4kaw$39tn05fdn-uaid!r_dgj%3z+7odhppmf-k@wa$
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['baumeventbot.ru', 'www.baumeventbot.ru']
+ALLOWED_HOSTS = ['baumeventbot.ru', 'www.baumeventbot.ru', '452d-91-184-252-239.ngrok-free.app']
 CSRF_TRUSTED_ORIGINS = ['https://baumeventbot.ru', 'https://www.baumeventbot.ru']
 
 # Application definition

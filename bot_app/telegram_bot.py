@@ -19,14 +19,15 @@ MOSCOW_TZ = timezone('Europe/Moscow')
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'bauman_event_tg_bot.settings')
 django.setup()
 load_dotenv()  # загружает переменные из .env
-from .models import User, Student, Teacher, Group, Event, StudentSubmission
+from .models import User, Student, Teacher, Group, Event, StudentSubmission, EventResponse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(TOKEN)
+BACKEND_URL = "https://baumeventbot.ru"
 
-API_URL = "https://science.iu5.bmstu.ru/sso/authorize?redirect_uri=https://baumeventbot.ru/oauth_callback"
+API_URL = f"https://science.iu5.bmstu.ru/sso/authorize?redirect_uri={BACKEND_URL}/oauth_callback"
 
 def require_auth(handler_func):
     """Декоратор для проверки авторизации"""
@@ -55,7 +56,8 @@ def set_bot_commands():
         types.BotCommand("events", "Список всех событий"),
         types.BotCommand("delete_event", "Удалить событие (для преподавателей)"),
         types.BotCommand("send_file", "Отправить файл преподавателю"),
-        types.BotCommand("received_files", "Полученные файлы за месяц")
+        types.BotCommand("received_files", "Полученные файлы за месяц"),
+        types.BotCommand("responses", "Посмотреть статус студентов по событиям")
     ]
     bot.set_my_commands(commands)
 
@@ -190,8 +192,33 @@ def process_description_step(message):
 
     event_data[telegram_id]['description'] = message.text
 
-    bot.send_message(telegram_id, "Введите дату события в формате ГГГГ-ММ-ДД ЧЧ:ММ (или введите 'Отмена' для отмены):")
-    bot.register_next_step_handler(message, process_date_step)
+    webapp_url = f"{BACKEND_URL}/select_date/?tgid={telegram_id}"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📅 Выбрать дату", web_app=types.WebAppInfo(url=webapp_url)))
+    bot.send_message(telegram_id, "Выберите дату и время через календарь:", reply_markup=markup)
+
+@bot.message_handler(content_types=['web_app_data'])
+def handle_webapp_date(message):
+    telegram_id = message.chat.id
+    data = message.web_app_data.data.strip()
+
+    try:
+        naive_dt = datetime.strptime(data, "%Y-%m-%d %H:%M")
+        moscow = timezone("Europe/Moscow")
+        aware_dt = moscow.localize(naive_dt)
+        event_data[telegram_id]['date'] = aware_dt
+
+        groups = Group.objects.all()
+        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+        for group in groups:
+            markup.add(types.KeyboardButton(group.name))
+        bot.send_message(telegram_id, "Выберите группы (введите через запятую):", reply_markup=markup)
+        bot.register_next_step_handler(message, process_groups_step)
+
+    except Exception as e:
+        bot.send_message(telegram_id, f"Ошибка разбора даты: {str(e)}")
+        process_description_step(message)
+
 
 def process_date_step(message):
     telegram_id = message.chat.id
@@ -233,8 +260,8 @@ def process_groups_step(message):
     event_data[telegram_id]['groups'] = Group.objects.filter(name__in=selected_groups)
 
     markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
-    markup.add('Без повторения', 'Ежедневно', 'Еженедельно', 'Ежемесячно')
-    bot.send_message(telegram_id, "Выберите тип повторения:", reply_markup=markup)
+    markup.add('Без повторения', 'Ежедневно', 'Еженедельно', 'Раз в 2 недели', 'Ежемесячно')
+    bot.send_message(telegram_id, "Выберите тип повторения(раз в какое время будет происходить событие):", reply_markup=markup)
     bot.register_next_step_handler(message, process_recurrence_step)
 
 def process_recurrence_step(message):
@@ -249,6 +276,7 @@ def process_recurrence_step(message):
         'Без повторения': 'none',
         'Ежедневно': 'daily',
         'Еженедельно': 'weekly',
+        'Раз в 2 недели': 'biweekly',
         'Ежемесячно': 'monthly',
     }
     event_data[telegram_id]['recurrence'] = recurrence_mapping.get(message.text, 'none')
@@ -308,7 +336,6 @@ def create_event_from_data(telegram_id):
             students = Student.objects.filter(group=group)
             for student in students:
                 if student.user.telegram_id:
-
                     recurrence_info = get_recurrence_info(event)
                     message = (
                         f"Новое событие:\n"
@@ -318,10 +345,17 @@ def create_event_from_data(telegram_id):
                         f"Повторение: {recurrence_info}\n"
                         f"Преподаватель:{event.teacher.user.secondName} {event.teacher.user.firstname} {event.teacher.user.middlename}\n"
                     )
+                    EventResponse.objects.get_or_create(event=event, student=student, defaults={'response': 'pending'})
                     bot.send_message(student.user.telegram_id, message)
                     if event.file:
                         with open(event.file.path, 'rb') as file:
                             bot.send_document(student.user.telegram_id, file)
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(
+                        types.InlineKeyboardButton("✅ Приду", callback_data=f"event_yes_{event.id}"),
+                        types.InlineKeyboardButton("❌ Не приду", callback_data=f"event_no_{event.id}")
+                    )
+                    bot.send_message(student.user.telegram_id, "Вы примете участие?", reply_markup=markup)
 
         bot.send_message(telegram_id, "Событие успешно создано и уведомления отправлены.")
     except Exception as e:
@@ -343,7 +377,10 @@ def handle_events(message):
 
         try:
             student = Student.objects.get(user=user)
-            events = Event.objects.filter(groups=student.group)
+            declined_ids = set(
+                student.eventresponse_set.filter(response='no').values_list('event_id', flat=True)
+            )
+            events = Event.objects.filter(groups=student.group).exclude(id__in=declined_ids)
             if events:
                 response = "Ваши события:\n"
                 for event in events:
@@ -386,7 +423,7 @@ def handle_events(message):
 @bot.message_handler(commands=['calendar'])
 @require_auth
 def handle_calendar(message):
-    webapp_url = f"https://baumeventbot.ru/calendar/?tgid={message.chat.id}"
+    webapp_url = f"{BACKEND_URL}/calendar/?tgid={message.chat.id}"
     
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(
@@ -410,6 +447,8 @@ def get_recurrence_info(event):
         return "Еженедельно"
     elif event.recurrence == 'monthly':
         return "Ежемесячно"
+    elif event.recurrence == 'biweekly':
+        return "Раз в 2 недели"
     else:
         return "Неизвестно"
 
@@ -658,6 +697,85 @@ def view_received_files(message):
                     bot.send_document(telegram_id, f)
         except Exception as e:
             bot.send_message(telegram_id, f"Ошибка при отправке файла: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("event_yes_") or call.data.startswith("event_no_"))
+def handle_event_response(call):
+    try:
+        response = 'yes' if call.data.startswith("event_yes_") else 'no'
+        event_id = int(call.data.split('_')[-1])
+        user = User.objects.get(telegram_id=call.message.chat.id)
+        student = Student.objects.get(user=user)
+        event = Event.objects.get(id=event_id)
+
+        er, _ = EventResponse.objects.get_or_create(event=event, student=student)
+        er.response = response
+        er.save()
+
+        status_text = "✅ Вы подтвердили участие." if response == 'yes' else "❌ Вы отказались от участия."
+
+        # Заменим текст сообщения
+        updated_text = f"Вы примете участие?\n\n{status_text}"
+
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=updated_text
+        )
+
+        # Убираем "загрузку"
+        bot.answer_callback_query(call.id)
+
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Ошибка: {e}", show_alert=True)
+
+
+@bot.message_handler(commands=['responses'])
+@require_auth
+def view_event_responses(message):
+    telegram_id = message.chat.id
+    try:
+        user = User.objects.get(telegram_id=telegram_id)
+        teacher = Teacher.objects.get(user=user)
+
+        events = Event.objects.filter(teacher=teacher).order_by('-date')
+        if not events:
+            bot.send_message(telegram_id, "У вас нет событий.")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for e in events:
+            markup.add(types.InlineKeyboardButton(
+                f"{e.title} ({e.date.strftime('%d.%m.%Y')})",
+                callback_data=f"view_responses_{e.id}"
+            ))
+        bot.send_message(telegram_id, "Выберите событие:", reply_markup=markup)
+
+    except Exception as e:
+        bot.send_message(telegram_id, f"Ошибка: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_responses_"))
+def show_event_responses(call):
+    bot.answer_callback_query(call.id)
+    try:
+        event_id = int(call.data.split('_')[-1])
+        event = Event.objects.get(id=event_id)
+        responses = EventResponse.objects.filter(event=event).select_related("student__user")
+
+        yes = [r.student.user.get_full_name() for r in responses if r.response == 'yes']
+        no = [r.student.user.get_full_name() for r in responses if r.response == 'no']
+        pending = [r.student.user.get_full_name() for r in responses if r.response == 'pending']
+
+        message = (
+            f"📅 {event.title} ({event.date.strftime('%d.%m.%Y %H:%M')})\n\n"
+            f"✅ Придут:\n" + ("\n".join(yes) or "—") + "\n\n"
+            f"❌ Отказались:\n" + ("\n".join(no) or "—") + "\n\n"
+            f"❓ Без ответа:\n" + ("\n".join(pending) or "—")
+        )
+        bot.send_message(call.message.chat.id, message)
+
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"Ошибка: {e}")
+
 
 
 # Запуск бота

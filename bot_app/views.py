@@ -25,6 +25,7 @@ from django.utils.timezone import make_aware, is_naive
 from datetime import datetime, time, timedelta
 from django.utils.timezone import get_current_timezone
 from pytz import timezone as pytz_timezone
+from django.views.decorators.clickjacking import xframe_options_exempt
 import os
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(TOKEN)
@@ -272,3 +273,8 @@ def export_ics(request):
     response = HttpResponse(cal.to_ical(), content_type='text/calendar')
     response['Content-Disposition'] = 'attachment; filename="events.ics"'
     return response
+
+
+@xframe_options_exempt
+def select_date_webapp(request):
+    return render(request, 'select_date.html')

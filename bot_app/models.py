@@ -11,6 +11,11 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.username
+
+    def get_full_name(self):
+        parts = [self.secondName, self.firstname, self.middlename]
+        return " ".join(p for p in parts if p)
+
 class Group(models.Model):
     """Группа студентов"""
     name = models.CharField(max_length=255, unique=True)
@@ -42,6 +47,7 @@ class Event(models.Model):
         ('none', 'Без повторения'),
         ('daily', 'Ежедневно'),
         ('weekly', 'Еженедельно'),
+        ('biweekly', 'Раз в 2 недели'),
         ('monthly', 'Ежемесячно'),
     ]
 
@@ -74,3 +80,18 @@ class StudentSubmission(models.Model):
 
     def __str__(self):
         return f"Отправка от {self.student.user.username} -> {self.teacher.user.username}"
+
+class EventResponse(models.Model):
+    RESPONSE_CHOICES = [
+        ('yes', 'Приду'),
+        ('no', 'Не приду'),
+        ('pending', 'Нет ответа')
+    ]
+
+    event = models.ForeignKey(Event, on_delete=models.CASCADE)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE)
+    response = models.CharField(max_length=10, choices=RESPONSE_CHOICES, default='pending')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('event', 'student')

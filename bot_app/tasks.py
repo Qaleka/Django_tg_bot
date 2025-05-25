@@ -30,6 +30,8 @@ def update_recurring_events():
             event.date += timedelta(days=1)
         elif event.recurrence == 'weekly':
             event.date += timedelta(weeks=1)
+        elif event.recurrence == 'biweekly':
+            event.date += timedelta(weeks=2)
         elif event.recurrence == 'monthly':
             # Переносим на тот же день следующего месяца
             next_month = event.date.month + 1

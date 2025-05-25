@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Выбор даты</title>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f2f2f2;
+      padding: 20px;
+      text-align: center;
+    }
+    #datetime {
+      font-size: 16px;
+      padding: 8px;
+      width: 80%;
+    }
+    button {
+      margin-top: 10px;
+      padding: 10px 20px;
+      background: #4CAF50;
+      border: none;
+      color: white;
+      font-size: 16px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h3>Выберите дату и время</h3>
+  <input type="text" id="datetime" placeholder="YYYY-MM-DD HH:MM">
+  <br>
+  <button id="sendButton">✅ Отправить</button>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      flatpickr("#datetime", {
+        enableTime: true,
+        dateFormat: "Y-m-d H:i",
+        time_24hr: true,
+        minDate: "today"
+      });
+
+      const btn = document.getElementById("sendButton");
+      btn.addEventListener("click", function () {
+        const datetime = document.getElementById("datetime").value;
+        if (datetime && window.Telegram && Telegram.WebApp) {
+          Telegram.WebApp.sendData(datetime);
+          Telegram.WebApp.close();
+        } else {
+          alert(window.Telegram);
+        }
+      });
+    });
+  </script>
+</body>
+</html>
