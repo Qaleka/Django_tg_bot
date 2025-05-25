@@ -7,27 +7,9 @@
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
   <style>
-    body {
-      font-family: sans-serif;
-      background: #f2f2f2;
-      padding: 20px;
-      text-align: center;
-    }
-    #datetime {
-      font-size: 16px;
-      padding: 8px;
-      width: 80%;
-    }
-    button {
-      margin-top: 10px;
-      padding: 10px 20px;
-      background: #4CAF50;
-      border: none;
-      color: white;
-      font-size: 16px;
-      border-radius: 6px;
-      cursor: pointer;
-    }
+    body { font-family: sans-serif; background: #f2f2f2; padding: 20px; text-align: center; }
+    #datetime { font-size: 16px; padding: 8px; width: 80%; }
+    button { margin-top: 10px; padding: 10px 20px; background: #4CAF50; border: none; color: white; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -38,6 +20,9 @@
 
   <script>
     document.addEventListener("DOMContentLoaded", function () {
+      const tgid = new URLSearchParams(window.location.search).get('tgid');
+      console.log("TGID from URL:", tgid); // Для отладки
+
       flatpickr("#datetime", {
         enableTime: true,
         dateFormat: "Y-m-d H:i",
@@ -48,11 +33,18 @@
       const btn = document.getElementById("sendButton");
       btn.addEventListener("click", function () {
         const datetime = document.getElementById("datetime").value;
-        if (datetime && window.Telegram && Telegram.WebApp) {
+        if (!datetime) {
+          alert("Пожалуйста, выберите дату и время");
+          return;
+        }
+
+        // Проверяем, запущено ли в Telegram WebView
+        if (window.Telegram && Telegram.WebApp) {
           Telegram.WebApp.sendData(datetime);
           Telegram.WebApp.close();
         } else {
-          alert(window.Telegram);
+          console.log("Дата выбрана (не в Telegram):", datetime); // Для отладки
+          alert("Дата выбрана: " + datetime);
         }
       });
     });

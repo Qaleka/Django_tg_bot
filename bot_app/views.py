@@ -274,7 +274,6 @@ def export_ics(request):
     response['Content-Disposition'] = 'attachment; filename="events.ics"'
     return response
 
-
 @xframe_options_exempt
 def select_date_webapp(request):
     return render(request, 'select_date.html')
