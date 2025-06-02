@@ -12,7 +12,7 @@ from bot_app.oauth import set_user_state, get_user_state
 from pytz import timezone, utc
 from pytz import timezone as pytz_timezone
 from dotenv import load_dotenv
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 
 MOSCOW_TZ = timezone('Europe/Moscow')
@@ -57,7 +57,8 @@ def set_bot_commands():
         types.BotCommand("delete_event", "Удалить событие (для преподавателей)"),
         types.BotCommand("send_file", "Отправить файл преподавателю"),
         types.BotCommand("received_files", "Полученные файлы за месяц"),
-        types.BotCommand("responses", "Посмотреть статус студентов по событиям")
+        types.BotCommand("responses", "Посмотреть статус студентов по событиям"),
+        types.BotCommand("edit_event", "Отредактировать событие")
     ]
     bot.set_my_commands(commands)
 
@@ -197,17 +198,28 @@ def process_description_step(message):
     markup.add(types.InlineKeyboardButton("📅 Выбрать дату", web_app=types.WebAppInfo(url=webapp_url)))
     bot.send_message(telegram_id, "Выберите дату и время через календарь:", reply_markup=markup)
 
-@bot.message_handler(content_types=['web_app_data'])
-def handle_webapp_date(message):
+    # 👇 Показываем обычную reply-клавиатуру с кнопкой "Готово"
+    ready_markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    ready_markup.add("Готово")
+    bot.send_message(telegram_id, "После выбора даты нажмите «Готово»", reply_markup=ready_markup)
+
+
+@bot.message_handler(func=lambda message: message.text.lower() == "готово")
+def handle_ready_after_webapp(message):
     telegram_id = message.chat.id
-    data = message.web_app_data.data.strip()
+    from django.core.cache import cache
+
+    date_str = cache.get(f"selected_date_{telegram_id}")
+    if not date_str:
+        bot.send_message(telegram_id, "⏳ Дата ещё не выбрана или не получена. Попробуйте позже.")
+        return
 
     try:
-        naive_dt = datetime.strptime(data, "%Y-%m-%d %H:%M")
+        naive_dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
         moscow = timezone("Europe/Moscow")
         aware_dt = moscow.localize(naive_dt)
         event_data[telegram_id]['date'] = aware_dt
-
+        bot.send_message(telegram_id, "Дата сохранена ✅", reply_markup=types.ReplyKeyboardRemove())
         groups = Group.objects.all()
         markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
         for group in groups:
@@ -216,37 +228,7 @@ def handle_webapp_date(message):
         bot.register_next_step_handler(message, process_groups_step)
 
     except Exception as e:
-        bot.send_message(telegram_id, f"Ошибка разбора даты: {str(e)}")
-        process_description_step(message)
-
-
-def process_date_step(message):
-    telegram_id = message.chat.id
-
-    if message.text.lower() in ['отмена', 'cancel']:
-        handle_cancel(message)
-        return
-
-    try:
-        naive_dt = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
-        moscow = timezone("Europe/Moscow")
-        aware_dt = moscow.localize(naive_dt)
-        event_data[telegram_id]['date'] = aware_dt
-
-        groups = Group.objects.all()
-        if not groups:
-            bot.send_message(telegram_id, "Нет доступных групп.")
-            return
-
-        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
-        for group in groups:
-            markup.add(types.KeyboardButton(group.name))
-        bot.send_message(telegram_id, "Выберите группы (введите через запятую):", reply_markup=markup)
-        bot.register_next_step_handler(message, process_groups_step)
-
-    except ValueError:
-        bot.send_message(telegram_id, "Неверный формат даты. Попробуйте снова (введите дату в формате ГГГГ-ММ-ДД ЧЧ:ММ):")
-        bot.register_next_step_handler(message, process_date_step)
+        bot.send_message(telegram_id, f"❌ Ошибка при обработке даты: {str(e)}")
 
 def process_groups_step(message):
     """Обработка выбора групп"""
@@ -654,15 +636,51 @@ def handle_submission_confirmation(call):
         submission.save()
 
         if data['teacher'].user.telegram_id:
-            bot.send_message(
-                data['teacher'].user.telegram_id,
-                f"📥 Новый файл от {student.user.secondName} {student.user.firstname} {student.user.middlename}:\nОписание: {data['description']}"
+            text = (
+                f"📥 Новый файл от {student.user.get_full_name()}:\n"
+                f"📝 Описание: {data['description']}"
             )
-            with open(data['file_path'], 'rb') as f:
-                bot.send_document(data['teacher'].user.telegram_id, f)
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(
+                types.InlineKeyboardButton("✅ Принять", callback_data=f"accept_{submission.id}"),
+                types.InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{submission.id}")
+            )
+
+            bot.send_message(data['teacher'].user.telegram_id, text, reply_markup=markup)
 
         bot.edit_message_text("Файл успешно отправлен!", telegram_id, call.message.message_id)
         submission_data.pop(telegram_id, None)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("accept_") or call.data.startswith("reject_"))
+def handle_submission_decision(call):
+    action, submission_id = call.data.split('_')
+    try:
+        submission = StudentSubmission.objects.get(id=submission_id)
+        teacher = submission.teacher
+        student = submission.student
+
+        if action == "accept":
+            submission.status = 'accepted'
+            bot.answer_callback_query(call.id, "✅ Работа принята")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            bot.send_message(student.user.telegram_id, f"✅ Ваш файл принят преподавателем.")
+
+            # Отправляем файл преподавателю
+            if submission.file and os.path.exists(submission.file.path):
+                with open(submission.file.path, 'rb') as f:
+                    bot.send_document(teacher.user.telegram_id, f)
+        else:
+            submission.status = 'rejected'
+            bot.answer_callback_query(call.id, "❌ Работа отклонена")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            bot.send_message(student.user.telegram_id, f"❌ Ваш файл был отклонён преподавателем.")
+
+        submission.save()
+
+    except StudentSubmission.DoesNotExist:
+        bot.answer_callback_query(call.id, "⚠️ Отправка не найдена.", show_alert=True)
+
 
 @bot.message_handler(commands=['received_files'])
 @require_auth
@@ -675,28 +693,113 @@ def view_received_files(message):
         bot.send_message(telegram_id, "Только преподаватели могут просматривать полученные файлы.")
         return
 
-    cutoff = now() - timedelta(days=30)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add("📆 За последний месяц", "👤 По студенту")
+    bot.send_message(telegram_id, "Выберите способ просмотра:", reply_markup=markup)
 
-    submissions = StudentSubmission.objects.filter(teacher=teacher, created_at__gte=cutoff).order_by('-created_at')
+    bot.register_next_step_handler(message, handle_received_files_choice, teacher)
+
+def handle_received_files_choice(message, teacher):
+    choice = message.text.strip()
+
+    if choice == "📆 За последний месяц":
+        show_recent_files(teacher, message.chat.id)
+    elif choice == "👤 По студенту":
+        bot.send_message(message.chat.id, "Введите фамилию и имя студента:")
+        bot.register_next_step_handler(message, handle_specific_student_files, teacher)
+    else:
+        bot.send_message(message.chat.id, "Неверный выбор. Используйте команду /received_files ещё раз.")
+
+def handle_specific_student_files(message, teacher):
+    query = message.text.strip().lower()
+    parts = query.split()
+
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "Пожалуйста, введите фамилию и имя. Повторите команду")
+        return
+
+    surname, firstname = parts[0], parts[1]
+
+    matches = Student.objects.filter(
+        user__secondName__icontains=surname,
+        user__firstname__icontains=firstname
+    )
+
+    if not matches.exists():
+        bot.send_message(message.chat.id, "Студент не найден.")
+        return
+
+    if matches.count() == 1:
+        student = matches.first()
+        show_student_files(message.chat.id, teacher, student)
+        return
+
+    # Если несколько — показываем кнопки
+    markup = types.InlineKeyboardMarkup()
+    for s in matches:
+        label = f"{s.user.secondName} {s.user.firstname} ({s.user.username})"
+        markup.add(types.InlineKeyboardButton(label, callback_data=f"student_files_{s.id}"))
+
+    bot.send_message(message.chat.id, "Выберите нужного студента:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("student_files_"))
+def show_files_for_selected_student(call):
+    try:
+        student_id = int(call.data.split("_")[2])
+        student = Student.objects.get(id=student_id)
+        teacher = Teacher.objects.get(user__telegram_id=call.message.chat.id)
+        bot.answer_callback_query(call.id)
+        show_student_files(call.message.chat.id, teacher, student)
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Ошибка: {str(e)}", show_alert=True)
+
+def show_student_files(chat_id, teacher, student):
+    submissions = StudentSubmission.objects.filter(
+        teacher=teacher,
+        student=student,
+        status='accepted'
+    ).order_by('-created_at')
 
     if not submissions.exists():
-        bot.send_message(telegram_id, "За последний месяц нет новых отправок.")
+        bot.send_message(chat_id, f"📂 У студента {student.user.get_full_name()} нет принятых файлов.")
         return
 
     for sub in submissions:
         local_dt = sub.created_at.astimezone(MOSCOW_TZ)
         text = (
-            f"👤 Студент: {sub.student.user.secondName} {sub.student.user.firstname} {sub.student.user.middlename}\n"
+            f"👤 Студент: {sub.student.user.get_full_name()}\n"
             f"📝 Описание: {sub.description}\n"
             f"📅 Дата: {local_dt.strftime('%d.%m.%Y %H:%M')}"
         )
-        try:
-            bot.send_message(telegram_id, text)
-            if sub.file:
-                with open(sub.file.path, 'rb') as f:
-                    bot.send_document(telegram_id, f)
-        except Exception as e:
-            bot.send_message(telegram_id, f"Ошибка при отправке файла: {str(e)}")
+        bot.send_message(chat_id, text)
+        if sub.file:
+            with open(sub.file.path, 'rb') as f:
+                bot.send_document(chat_id, f)
+
+def show_recent_files(teacher, chat_id):
+    cutoff = now() - timedelta(days=30)
+    submissions = StudentSubmission.objects.filter(
+        teacher=teacher,
+        created_at__gte=cutoff,
+        status='accepted'  # показываем только принятые
+    ).order_by('-created_at')
+
+    if not submissions.exists():
+        bot.send_message(chat_id, "Нет новых принятых файлов за последний месяц.")
+        return
+
+    for sub in submissions:
+        local_dt = sub.created_at.astimezone(MOSCOW_TZ)
+        text = (
+            f"👤 Студент: {sub.student.user.get_full_name()}\n"
+            f"📝 Описание: {sub.description}\n"
+            f"📅 Дата: {local_dt.strftime('%d.%m.%Y %H:%M')}"
+        )
+        bot.send_message(chat_id, text)
+        if sub.file:
+            with open(sub.file.path, 'rb') as f:
+                bot.send_document(chat_id, f)
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("event_yes_") or call.data.startswith("event_no_"))
 def handle_event_response(call):
@@ -776,7 +879,222 @@ def show_event_responses(call):
     except Exception as e:
         bot.send_message(call.message.chat.id, f"Ошибка: {e}")
 
+@bot.message_handler(commands=['edit_event'])
+@require_auth
+def handle_edit_event(message):
+    telegram_id = message.chat.id
+    try:
+        user = User.objects.get(telegram_id=telegram_id)
+        teacher = Teacher.objects.get(user=user)
+    except (User.DoesNotExist, Teacher.DoesNotExist):
+        bot.send_message(telegram_id, "Только преподаватели могут редактировать события.")
+        return
 
+    events = Event.objects.filter(teacher=teacher).order_by('-date')
+    if not events.exists():
+        bot.send_message(telegram_id, "У вас нет созданных событий.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+    for e in events:
+        label = f"{e.title} ({e.date.strftime('%d.%m.%Y %H:%M')})"
+        markup.add(types.InlineKeyboardButton(label, callback_data=f"edit_event_{e.id}"))
+
+    bot.send_message(telegram_id, "Выберите событие для редактирования:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_event_"))
+def select_event_to_edit(call):
+    bot.answer_callback_query(call.id)
+    telegram_id = call.message.chat.id
+    event_id = int(call.data.split("_")[2])
+    try:
+        event = Event.objects.get(id=event_id)
+        event_data[telegram_id] = {
+            'edit': True,
+            'event_id': event.id,
+            'title': event.title,
+            'description': event.description,
+            'date': event.date,
+            'recurrence': event.recurrence,
+            'file': event.file.path if event.file else None
+        }
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✏️ Название", callback_data="edit_title"),
+            types.InlineKeyboardButton("📄 Описание", callback_data="edit_description"),
+        )
+        markup.add(
+            types.InlineKeyboardButton("🕒 Дата", callback_data="edit_date"),
+            types.InlineKeyboardButton("🔁 Повторение", callback_data="edit_recurrence"),
+        )
+        markup.add(
+            types.InlineKeyboardButton("📎 Файл", callback_data="edit_file"),
+        )
+        markup.add(
+            types.InlineKeyboardButton("✅ Подтвердить изменения", callback_data="confirm_edit"),
+            types.InlineKeyboardButton("❌ Отменить", callback_data="cancel_edit")
+        )
+
+        bot.send_message(telegram_id, "Выберите, что хотите изменить:", reply_markup=markup)
+    except:
+        bot.send_message(telegram_id, "Ошибка при загрузке события.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_title")
+def edit_title(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "Введите новое название:")
+    bot.register_next_step_handler(call.message, save_edited_title)
+
+def save_edited_title(message):
+    event_data[message.chat.id]['title'] = message.text
+    bot.send_message(message.chat.id, "Название обновлено. Вы можете изменить другие параметры или нажать ✅ Подтвердить.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_description")
+def edit_description(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "Введите новое описание:")
+    bot.register_next_step_handler(call.message, save_edited_description)
+
+def save_edited_description(message):
+    event_data[message.chat.id]['description'] = message.text
+    bot.send_message(message.chat.id, "Описание обновлено. Вы можете изменить другие параметры или нажать ✅ Подтвердить.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_date")
+def edit_date(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "Введите новую дату в формате ГГГГ-ММ-ДД ЧЧ:ММ:")
+    bot.register_next_step_handler(call.message, save_edited_date)
+
+def save_edited_date(message):
+    try:
+        naive_dt = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
+        moscow = timezone("Europe/Moscow")
+        aware_dt = moscow.localize(naive_dt)
+        event_data[message.chat.id]['date'] = aware_dt
+        bot.send_message(message.chat.id, "Дата обновлена. Вы можете изменить другие параметры или нажать ✅ Подтвердить.")
+    except ValueError:
+        bot.send_message(message.chat.id, "Неверный формат. Попробуйте ещё раз (ГГГГ-ММ-ДД ЧЧ:ММ):")
+        bot.register_next_step_handler(message, save_edited_date)
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_recurrence")
+def edit_recurrence(call):
+    bot.answer_callback_query(call.id)
+    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    markup.add('Без повторения', 'Ежедневно')
+    markup.add('Еженедельно', 'Раз в 2 недели', 'Ежемесячно')
+    bot.send_message(call.message.chat.id, "Выберите тип повторения:", reply_markup=markup)
+    bot.register_next_step_handler(call.message, save_edited_recurrence)
+
+def save_edited_recurrence(message):
+    recurrence_mapping = {
+        'Без повторения': 'none',
+        'Ежедневно': 'daily',
+        'Еженедельно': 'weekly',
+        'Раз в 2 недели': 'biweekly',
+        'Ежемесячно': 'monthly',
+    }
+
+    value = recurrence_mapping.get(message.text)
+    if not value:
+        bot.send_message(message.chat.id, "Неверный выбор. Попробуйте снова.")
+        bot.register_next_step_handler(message, save_edited_recurrence)
+        return
+
+    event_data[message.chat.id]['recurrence'] = value
+    bot.send_message(message.chat.id, "Тип повторения обновлён. Вы можете изменить другие параметры или нажать ✅ Подтвердить.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_file")
+def edit_file(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "Отправьте новый файл или введите 'Пропустить':")
+    bot.register_next_step_handler(call.message, save_edited_file)
+
+def save_edited_file(message):
+    telegram_id = message.chat.id
+
+    if message.text and message.text.lower() == 'пропустить':
+        event_data[telegram_id]['file'] = None
+        bot.send_message(telegram_id, "Файл удалён. Можете изменить другие поля или нажать ✅ Подтвердить.")
+        return
+
+    if message.document:
+        file_id = message.document.file_id
+        file_info = bot.get_file(file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        file_name = message.document.file_name
+
+        os.makedirs(os.path.join(settings.MEDIA_ROOT, 'event_files'), exist_ok=True)
+        file_path = os.path.join(settings.MEDIA_ROOT, 'event_files', file_name)
+
+        with open(file_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+
+        event_data[telegram_id]['file'] = file_path
+        bot.send_message(telegram_id, "Файл обновлён. Можете изменить другие поля или нажать ✅ Подтвердить.")
+    else:
+        bot.send_message(telegram_id, "Пожалуйста, отправьте документ или введите 'Пропустить'.")
+        bot.register_next_step_handler(message, save_edited_file)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_edit")
+def cancel_editing(call):
+    bot.answer_callback_query(call.id)
+    telegram_id = call.message.chat.id
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
+    )
+    event_data.pop(telegram_id, None)
+    bot.send_message(telegram_id, "Редактирование отменено.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "confirm_edit")
+def confirm_event_edit(call):
+    bot.answer_callback_query(call.id)
+    telegram_id = call.message.chat.id
+    data = event_data.get(telegram_id)
+    if not data:
+        bot.send_message(telegram_id, "Ошибка: данные не найдены.")
+        return
+
+    try:
+        event = Event.objects.get(id=data['event_id'])
+        event.title = data['title']
+        event.description = data['description']
+        event.date = data['date']
+        event.recurrence = data.get('recurrence', 'none')
+        if data.get('file'):
+            event.file.name = f"event_files/{os.path.basename(data['file'])}"
+        event.save()
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+        # Уведомление участникам
+        from .models import EventResponse
+        responses = EventResponse.objects.filter(event=event, response='yes').select_related('student__user')
+        for r in responses:
+            try:
+                bot.send_message(
+                    r.student.user.telegram_id,
+                    f"🔔 Обновление события, на которое вы записались:\n"
+                    f"Название: {event.title}\n"
+                    f"Описание: {event.description}\n"
+                    f"Дата: {event.date.strftime('%d.%m.%Y %H:%M')}"
+                )
+                if event.file and os.path.exists(event.file.path):
+                    with open(event.file.path, 'rb') as f:
+                        bot.send_document(r.student.user.telegram_id, f)
+            except Exception as e:
+                logging.error(f"Не удалось уведомить {r.student.user.telegram_id}: {e}")
+
+        bot.send_message(telegram_id, "✅ Событие обновлено и участники уведомлены.")
+        event_data.pop(telegram_id, None)
+
+    except Exception as e:
+        bot.send_message(telegram_id, f"Ошибка при сохранении: {str(e)}")
 
 # Запуск бота
 def start_bot():

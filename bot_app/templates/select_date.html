@@ -18,36 +18,61 @@
   <br>
   <button id="sendButton">✅ Отправить</button>
 
-  <script>
-    document.addEventListener("DOMContentLoaded", function () {
-      const tgid = new URLSearchParams(window.location.search).get('tgid');
-      console.log("TGID from URL:", tgid); // Для отладки
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const now = new Date();
 
-      flatpickr("#datetime", {
-        enableTime: true,
-        dateFormat: "Y-m-d H:i",
-        time_24hr: true,
-        minDate: "today"
-      });
+    flatpickr("#datetime", {
+      enableTime: true,
+      dateFormat: "Y-m-d H:i",
+      time_24hr: true,
+      minDate: now,  // запрещаем выбирать прошлое
+      defaultDate: now,
+      onReady: function(selectedDates, dateStr, instance) {
+        instance.set("minTime", now.getHours() + ":" + now.getMinutes());
+      },
+      onChange: function(selectedDates, dateStr, instance) {
+        const selected = selectedDates[0];
+        const today = new Date();
+        const isToday = selected.toDateString() === today.toDateString();
 
-      const btn = document.getElementById("sendButton");
-      btn.addEventListener("click", function () {
-        const datetime = document.getElementById("datetime").value;
-        if (!datetime) {
-          alert("Пожалуйста, выберите дату и время");
-          return;
-        }
-
-        // Проверяем, запущено ли в Telegram WebView
-        if (window.Telegram && Telegram.WebApp) {
-          Telegram.WebApp.sendData(datetime);
-          Telegram.WebApp.close();
+        if (isToday) {
+          instance.set("minTime", today.getHours() + ":" + today.getMinutes());
         } else {
-          console.log("Дата выбрана (не в Telegram):", datetime); // Для отладки
-          alert("Дата выбрана: " + datetime);
+          instance.set("minTime", "00:00");
         }
-      });
+      }
     });
-  </script>
+
+    document.getElementById("sendButton").addEventListener("click", function () {
+      const datetime = document.getElementById("datetime").value;
+      const urlParams = new URLSearchParams(window.location.search);
+      const tgid = urlParams.get("tgid");
+
+      if (!datetime || !tgid) {
+        alert("Ошибка: не выбрана дата или отсутствует tgid");
+        return;
+      }
+
+      fetch("https://baumeventbot.ru/api/save_selected_date/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ tgid: tgid, datetime: datetime })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === "ok") {
+          alert("✅ Дата успешно сохранена. Можете закрыть окно и нажать «Готово».");
+        } else {
+          alert("❌ Ошибка при сохранении даты.");
+        }
+      })
+      .catch(err => alert("Ошибка: " + err));
+    });
+  });
+</script>
+
 </body>
 </html>

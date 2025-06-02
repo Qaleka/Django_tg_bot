@@ -72,6 +72,12 @@ class EventGroup(models.Model):
         return f"{self.event.title} -> {self.group.name}"
 
 class StudentSubmission(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Ожидает проверки'),
+        ('accepted', 'Принят'),
+        ('rejected', 'Отклонён')
+    ]
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
     student = models.ForeignKey(Student, on_delete=models.CASCADE)
     teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE)
     description = models.TextField()

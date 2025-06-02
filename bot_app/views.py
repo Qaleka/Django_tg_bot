@@ -277,3 +277,18 @@ def export_ics(request):
 @xframe_options_exempt
 def select_date_webapp(request):
     return render(request, 'select_date.html')
+
+@csrf_exempt
+def save_selected_date(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            telegram_id = data.get('tgid')
+            datetime_str = data.get('datetime')
+            if telegram_id and datetime_str:
+                cache.set(f"selected_date_{telegram_id}", datetime_str, timeout=300)
+                return JsonResponse({"status": "ok"})
+        except Exception as e:
+            return JsonResponse({"status": "error", "message": str(e)}, status=400)
+
+    return JsonResponse({"status": "error"}, status=400)
